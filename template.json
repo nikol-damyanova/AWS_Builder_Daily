@@ -1,0 +1,293 @@
+{
+  "AWSTemplateFormatVersion": "2010-09-09",
+  "Description": "Daily Builder workflow; disabled until authenticated preview is verified.",
+  "Parameters": {
+    "CodeBucket": {
+      "Type": "String"
+    },
+    "CodeKey": {
+      "Type": "String"
+    },
+    "AccessEndsAt": {
+      "Type": "String"
+    }
+  },
+  "Resources": {
+    "Profile": {
+      "Type": "AWS::BedrockAgentCore::BrowserProfile",
+      "Properties": {
+        "Name": "builder_daily_90",
+        "Description": "Dedicated Builder Center sign-in only"
+      }
+    },
+    "State": {
+      "Type": "AWS::DynamoDB::Table",
+      "Properties": {
+        "BillingMode": "PAY_PER_REQUEST",
+        "AttributeDefinitions": [
+          {
+            "AttributeName": "pk",
+            "AttributeType": "S"
+          }
+        ],
+        "KeySchema": [
+          {
+            "AttributeName": "pk",
+            "KeyType": "HASH"
+          }
+        ],
+        "SSESpecification": {
+          "SSEEnabled": true
+        }
+      }
+    },
+    "LogGroup": {
+      "Type": "AWS::Logs::LogGroup",
+      "Properties": {
+        "LogGroupName": {
+          "Fn::Sub": "/aws/lambda/${AWS::StackName}"
+        },
+        "RetentionInDays": 14
+      }
+    },
+    "WorkerRole": {
+      "Type": "AWS::IAM::Role",
+      "Properties": {
+        "AssumeRolePolicyDocument": {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Principal": {
+                "Service": "lambda.amazonaws.com"
+              },
+              "Action": "sts:AssumeRole"
+            }
+          ]
+        },
+        "Policies": [
+          {
+            "PolicyName": "DedicatedBuilderWorkflow",
+            "PolicyDocument": {
+              "Version": "2012-10-17",
+              "Statement": [
+                {
+                  "Effect": "Allow",
+                  "Action": [
+                    "logs:CreateLogStream",
+                    "logs:PutLogEvents"
+                  ],
+                  "Resource": {
+                    "Fn::GetAtt": [
+                      "LogGroup",
+                      "Arn"
+                    ]
+                  }
+                },
+                {
+                  "Effect": "Allow",
+                  "Action": [
+                    "dynamodb:GetItem",
+                    "dynamodb:PutItem",
+                    "dynamodb:UpdateItem"
+                  ],
+                  "Resource": {
+                    "Fn::GetAtt": [
+                      "State",
+                      "Arn"
+                    ]
+                  }
+                },
+                {
+                  "Effect": "Allow",
+                  "Action": [
+                    "bedrock:InvokeModel"
+                  ],
+                  "Resource": {
+                    "Fn::Sub": "arn:${AWS::Partition}:bedrock:${AWS::Region}::foundation-model/amazon.nova-micro-v1:0"
+                  },
+                  "Condition": {
+                    "DateLessThan": {
+                      "aws:CurrentTime": {
+                        "Ref": "AccessEndsAt"
+                      }
+                    }
+                  }
+                },
+                {
+                  "Effect": "Allow",
+                  "Action": [
+                    "bedrock-agentcore:StartBrowserSession",
+                    "bedrock-agentcore:StopBrowserSession",
+                    "bedrock-agentcore:GetBrowserSession",
+                    "bedrock-agentcore:ConnectBrowserAutomationStream",
+                    "bedrock-agentcore:SaveBrowserSessionProfile"
+                  ],
+                  "Resource": [
+                    {
+                      "Fn::Sub": "arn:${AWS::Partition}:bedrock-agentcore:${AWS::Region}:aws:browser/aws.browser.v1"
+                    },
+                    {
+                      "Fn::Sub": "arn:${AWS::Partition}:bedrock-agentcore:${AWS::Region}:${AWS::AccountId}:browser/aws.browser.v1"
+                    },
+                    {
+                      "Fn::GetAtt": [
+                        "Profile",
+                        "ProfileArn"
+                      ]
+                    }
+                  ],
+                  "Condition": {
+                    "DateLessThan": {
+                      "aws:CurrentTime": {
+                        "Ref": "AccessEndsAt"
+                      }
+                    }
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    "Worker": {
+      "Type": "AWS::Lambda::Function",
+      "DependsOn": "LogGroup",
+      "Properties": {
+        "FunctionName": {
+          "Ref": "AWS::StackName"
+        },
+        "Runtime": "nodejs22.x",
+        "Handler": "index.handler",
+        "Role": {
+          "Fn::GetAtt": [
+            "WorkerRole",
+            "Arn"
+          ]
+        },
+        "MemorySize": 512,
+        "Timeout": 210,
+        "ReservedConcurrentExecutions": 1,
+        "Code": {
+          "S3Bucket": {
+            "Ref": "CodeBucket"
+          },
+          "S3Key": {
+            "Ref": "CodeKey"
+          }
+        },
+        "Environment": {
+          "Variables": {
+            "STATE_TABLE": {
+              "Ref": "State"
+            }
+          }
+        }
+      }
+    },
+    "InvokeConfig": {
+      "Type": "AWS::Lambda::EventInvokeConfig",
+      "Properties": {
+        "FunctionName": {
+          "Ref": "Worker"
+        },
+        "Qualifier": "$LATEST",
+        "MaximumRetryAttempts": 0,
+        "MaximumEventAgeInSeconds": 60
+      }
+    },
+    "SchedulerRole": {
+      "Type": "AWS::IAM::Role",
+      "Properties": {
+        "AssumeRolePolicyDocument": {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Principal": {
+                "Service": "scheduler.amazonaws.com"
+              },
+              "Action": "sts:AssumeRole",
+              "Condition": {
+                "StringEquals": {
+                  "aws:SourceAccount": {
+                    "Ref": "AWS::AccountId"
+                  }
+                },
+                "ArnEquals": {
+                  "aws:SourceArn": {
+                    "Fn::Sub": "arn:${AWS::Partition}:scheduler:${AWS::Region}:${AWS::AccountId}:schedule-group/default"
+                  }
+                }
+              }
+            }
+          ]
+        },
+        "Policies": [
+          {
+            "PolicyName": "InvokeOnlyBuilderWorker",
+            "PolicyDocument": {
+              "Version": "2012-10-17",
+              "Statement": [
+                {
+                  "Effect": "Allow",
+                  "Action": "lambda:InvokeFunction",
+                  "Resource": {
+                    "Fn::GetAtt": [
+                      "Worker",
+                      "Arn"
+                    ]
+                  },
+                  "Condition": {
+                    "DateLessThan": {
+                      "aws:CurrentTime": {
+                        "Ref": "AccessEndsAt"
+                      }
+                    }
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      }
+    }
+  },
+  "Outputs": {
+    "Function": {
+      "Value": {
+        "Ref": "Worker"
+      }
+    },
+    "FunctionArn": {
+      "Value": {
+        "Fn::GetAtt": [
+          "Worker",
+          "Arn"
+        ]
+      }
+    },
+    "StateTable": {
+      "Value": {
+        "Ref": "State"
+      }
+    },
+    "ProfileId": {
+      "Value": {
+        "Fn::GetAtt": [
+          "Profile",
+          "ProfileId"
+        ]
+      }
+    },
+    "SchedulerRoleArn": {
+      "Value": {
+        "Fn::GetAtt": [
+          "SchedulerRole",
+          "Arn"
+        ]
+      }
+    }
+  }
+}
