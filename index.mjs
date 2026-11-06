@@ -29,9 +29,12 @@ async function saveStatus(pk, status, extra={}) {
   await db.send(new UpdateCommand({TableName:table,Key:{pk}, UpdateExpression:'SET #s = :s, updatedAt = :t, detail = :d',ExpressionAttributeNames:{'#s':'status'},ExpressionAttributeValues:{':s':status,':t':new Date().toISOString(),':d':extra}}));
 }
 export async function requireLogin(page, expectedName) {
-  await page.getByRole('link',{name:'Settings',exact:true}).waitFor({timeout:25000});
-  if (await page.getByRole('button',{name:'Sign in',exact:true}).isVisible()) throw new Error('SIGN_IN_REQUIRED');
-  await page.getByRole('button',{name:expectedName,exact:true}).waitFor({timeout:10000});
+  const identity = page.getByRole('button',{name:expectedName,exact:true});
+  try { await identity.waitFor({timeout:15000}); return; } catch {}
+  const signIn = page.getByRole('button',{name:'Sign in',exact:true});
+  if (await signIn.isVisible()) await signIn.click();
+  try { await identity.waitFor({timeout:25000}); }
+  catch { throw new Error('SIGN_IN_REQUIRED'); }
 }
 async function latestArticle(page) {
   const latest = page.getByRole('button',{name:'Latest',exact:true});
@@ -90,9 +93,10 @@ async function publish(page, comment) {
   await page.getByText(comment,{exact:true}).waitFor({timeout:20000});
   if (await page.getByRole('button',{name:/^Like this article/}).first().getAttribute('aria-pressed') !== 'true') throw new Error('LIKE_NOT_CONFIRMED');
 }
-export async function handler(event={},context={}) {
-  if (event.mode === 'connection-test') { if(event.login)context.callbackWaitsForEmptyEventLoop=false; const {run}=await import('./connection_probe.mjs'); return run(event); }
-  const preview = event.mode === 'preview';
+export async function handler(event={}) {
+  if (event.mode === 'connection-test') { const {run}=await import('./connection_probe.mjs'); return run(event); }
+  const authCheck = event.mode === 'auth-check';
+  const preview = event.mode === 'preview' || authCheck;
   if (!preview && event.mode !== 'scheduled') throw new Error('Unsupported invocation mode');
   const cfg = await config();
   if (!cfg?.profileId || !cfg.expectedName) throw new Error('SETUP_REQUIRED');
@@ -113,6 +117,8 @@ export async function handler(event={},context={}) {
     page.setDefaultTimeout(15000);
     await page.goto('https://builder.aws.com/',{waitUntil:'domcontentloaded'});
     await requireLogin(page,cfg.expectedName);
+    await agent.send(new SaveBrowserSessionProfileCommand({browserIdentifier:browserId,sessionId:session.sessionId,profileIdentifier:cfg.profileId}));
+    if (authCheck) return {status:'AUTHENTICATED',profileSaved:true};
     url = await latestArticle(page);
     const article = await inspectArticle(page);
     const comment = await draftComment(article);
