@@ -1,0 +1,5 @@
+[Unit]
+Description=Stop the Builder VM
+[Service]
+Type=oneshot
+ExecStart=/sbin/shutdown -h now

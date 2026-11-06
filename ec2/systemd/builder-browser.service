@@ -1,0 +1,12 @@
+[Unit]
+After=network-online.target builder-x.service
+Requires=builder-x.service
+[Service]
+User=builder
+WorkingDirectory=/opt/builder
+EnvironmentFile=/opt/builder/builder.env
+ExecStart=/usr/bin/google-chrome-stable --user-data-dir=/var/lib/builder/chrome-profile --remote-debugging-address=127.0.0.1 --remote-debugging-port=9222 --window-size=1280,800 --no-first-run https://builder.aws.com/
+Restart=on-failure
+TimeoutStopSec=30
+[Install]
+WantedBy=multi-user.target

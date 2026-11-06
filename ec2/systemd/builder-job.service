@@ -1,0 +1,10 @@
+[Unit]
+After=builder-browser.service
+Requires=builder-browser.service
+[Service]
+Type=oneshot
+TimeoutStartSec=260
+User=builder
+WorkingDirectory=/opt/builder
+EnvironmentFile=/opt/builder/builder.env
+ExecStart=/usr/bin/timeout 240 /usr/local/bin/node /opt/builder/run.mjs scheduled

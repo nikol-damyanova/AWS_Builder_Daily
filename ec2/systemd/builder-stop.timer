@@ -1,0 +1,7 @@
+[Unit]
+Description=Backup shutdown after each boot
+[Timer]
+OnActiveSec=25min
+Unit=builder-stop.service
+[Install]
+WantedBy=timers.target

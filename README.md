@@ -1,5 +1,7 @@
 # AWS Builder Center Daily Workflow
 
+The [EC2 implementation and restore instructions](ec2/README.md) are in `ec2/`. The source files at the repository root are the original Lambda and AgentCore implementation.
+
 A scheduled browser workflow that uses AWS to like and leave a short, positive comment on a recent AWS Builder Center article. It opens the **Latest** feed and selects the newest article it finds that accepts comments. A persistent Chrome profile lets the workflow reuse a Builder ID session across EC2 restarts.
 
 ## How it works

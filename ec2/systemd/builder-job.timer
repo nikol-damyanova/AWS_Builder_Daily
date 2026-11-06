@@ -1,0 +1,8 @@
+[Unit]
+Description=Builder noon Sofia job
+[Timer]
+OnCalendar=*-*-* 12:00:00 Europe/Sofia
+Persistent=false
+Unit=builder-job.service
+[Install]
+WantedBy=timers.target
