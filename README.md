@@ -1,170 +1,59 @@
-# AWS Builder Daily
+# AWS Builder Center Daily Workflow
 
-AWS Builder Daily drafts and, when explicitly enabled, publishes one grounded
-comment on an eligible AWS Builder Center article per day. The workflow runs
-on AWS Lambda, uses Amazon Bedrock Nova Micro to draft the comment, and uses
-Amazon Bedrock AgentCore Browser for the authenticated Builder Center session.
+A scheduled browser workflow that uses AWS to like and leave a short, positive comment on a recent AWS Builder Center article. It opens the **Latest** feed and selects the newest article it finds that accepts comments. A persistent Chrome profile lets the workflow reuse a Builder ID session across EC2 restarts.
 
-The workflow is designed to be safe to preview before any public action:
+## How it works
 
-- Deployment creates infrastructure, but does **not** create a schedule.
-- Publishing is disabled in DynamoDB by default.
-- `preview` must successfully inspect the authenticated page and its controls.
-- `enable` requires `CONFIRM_PUBLICATION=YES` and a preview no older than one hour.
-- Lambda retries are disabled, and each calendar day and article is reserved
-  before publication to prevent duplicate attempts.
+| Component | Role |
+| --- | --- |
+| Amazon EventBridge Scheduler | Starts and stops the EC2 instance on a daily schedule. |
+| Amazon EC2 | Runs the Node.js worker through a systemd timer. A separate shutdown timer limits runtime if the scheduled stop fails. |
+| Playwright and Chrome | Navigate Builder Center, check the signed-in profile, and interact with the article. |
+| Amazon DynamoDB | Records daily attempts and article activity to prevent duplicate comments and unsafe retries. |
+| AWS Systems Manager | Provides administrative access without inbound ports on the instance. |
+| AWS CloudFormation | Provisions the VM infrastructure. Browser and worker configuration were applied separately. |
 
-## What it creates
+The worker checks whether the article is already liked before clicking. Comments come from a fixed list of short phrases, such as “Great post!” and “Thanks for sharing!”.
 
-`deploy.py` creates the following resources in the selected AWS region:
+## Schedule
 
-- AWS Lambda function running Node.js 22
-- Amazon DynamoDB on-demand table for configuration and run state
-- Amazon Bedrock AgentCore Browser profile
-- CloudWatch Logs log group with 14-day retention
-- IAM roles for Lambda and EventBridge Scheduler
-- An encrypted, private S3 bucket for the Lambda deployment package
+The reference deployment starts EC2 at **11:55**, runs the job at **12:00**, and stops EC2 at **12:15**, all in the **Europe/Sofia** time zone. The schedules have an explicit end date. Stopping EC2 limits compute usage, while the attached disk remains billable.
 
-The EventBridge Scheduler schedule is created only by `python admin.py enable`.
-It runs at noon in the `Europe/Sofia` time zone for the configured 90-day
-window. The schedule deletes itself after completion.
+## Authentication
 
-## Prerequisites
+Sign in interactively with your own AWS Builder ID when setting up the browser. Chrome keeps its profile on the encrypted EC2 volume. If the saved sign-in can no longer renew and Builder asks for a password or MFA code, a new interactive sign-in is required. Keep browser profiles, credentials, and verification codes out of Git.
 
-- An AWS account and credentials configured for the AWS CLI/SDK
-- Python 3.10+ and `boto3`
-- Node.js 22+ and npm
-- Access to Amazon Bedrock Nova Micro in the deployment region
-- Permission to use Bedrock AgentCore Browser
-- An AWS Builder Center account
+## Setup overview
 
-The AWS identity used for deployment needs permission to create the
-CloudFormation, IAM, Lambda, DynamoDB, CloudWatch Logs, S3, Bedrock, and
-Scheduler resources declared in `template.json`.
+1. Provision the EC2 foundation and configure a DynamoDB state table with access for the worker.
+2. Install Node.js, Chrome, and the worker dependencies. Configure Chrome to use a persistent profile.
+3. Sign in to Builder Center and run a read-only check to confirm the expected identity and article selection.
+4. Configure the systemd job and backup shutdown timers. Set the EventBridge start and stop schedules with your time zone and end date.
 
-## Installation
+The infrastructure template covers the foundation. The reference deployment also required separate worker installation, browser setup, and schedule configuration.
 
-From the repository directory:
+## What was tested
 
-```bash
-npm ci
-python -m pip install -r requirements.txt
-cp .env.example .env
-```
+- The saved Builder ID session renewed after a full EC2 stop and start without a fresh password or MFA prompt.
+- A manual test opened the top article in the Latest feed, applied one like, and verified that the like persisted after reloading.
+- A separate test verified that a short comment appeared under the expected profile after reloading.
 
-Set these values in the environment before deployment:
+The manual tests covered the browser and posting steps. Scheduled execution and recovery from a fresh MFA challenge require separate verification.
 
-```bash
-export AWS_REGION=us-east-1
-export STACK_NAME=builder-daily-90
-export EXPECTED_BUILDER_NAME="Your Builder Center display name"
-```
+## Safety
 
-`EXPECTED_BUILDER_NAME` must exactly match the display name shown by the
-authenticated Builder Center account.
+Publishing is disabled by default.
 
-## Deployment and first-time setup
-
-Run these commands in order:
-
-```bash
-python deploy.py
-python admin.py login
-python admin.py save-login
-python admin.py preview
-```
-
-1. `deploy.py` packages the Lambda code, creates the AWS resources, and writes
-   deployment outputs to the local, ignored file `deployment.json`.
-2. `admin.py login` starts an AgentCore Browser session and prints an AWS
-   console live-view URL. Take control of that session and sign in **only** to
-   `builder.aws.com`.
-3. `admin.py save-login` verifies the expected Builder identity and saves the
-   authenticated session into the dedicated AgentCore Browser profile.
-4. `admin.py preview` invokes Lambda in preview mode. It drafts a comment but
-   does not publish it. The result must be `PREVIEW_READY`.
-
-The login commands create `login-session.json`, which is ignored by Git and
-must not be shared.
-
-## Enable or stop publication
-
-After reviewing a successful preview, explicitly enable the 90-day schedule:
-
-```bash
-export CONFIRM_PUBLICATION=YES
-python admin.py enable
-```
-
-The command refuses to enable publication unless the preview is recent and
-the authenticated page controls were validated. It also refuses to start if
-the prepared start date has already passed.
-
-To disable public actions and the schedule:
-
-```bash
-python admin.py stop
-```
-
-To inspect configuration and recorded daily/article statuses:
-
-```bash
-python admin.py status
-```
-
-## Runtime behavior
-
-For each scheduled invocation, Lambda:
-
-1. Checks the 90-day window and the DynamoDB kill switch.
-2. Starts a browser session using the saved Builder profile.
-3. Selects a recent article from the **Latest** Explore feed with comments
-   enabled.
-4. Sends only the article title and body to Nova Micro.
-5. Requires JSON output containing a 30–600 character comment and supporting
-   evidence present in the article text.
-6. Reserves the article and rechecks the kill switch immediately before public
-   actions.
-7. Posts the comment and likes the article, then records the result.
-
-Thin, unsuitable, or ungrounded articles are skipped. A failed or ambiguous
-submission is not automatically retried; inspect the recorded status before
-taking corrective action.
-
-## Project files
-
-| File | Purpose |
-|---|---|
-| `index.mjs` | Lambda handler, browser workflow, drafting, publication, and state updates |
-| `core.mjs` | Date-window, URL-validation, and model-output validation helpers |
-| `core.test.mjs` | Node.js tests for the core safety and date-window rules |
-| `admin.py` | Login, preview, enable, stop, and status commands |
-| `deploy.py` | Packages the worker and creates the AWS infrastructure |
-| `login.mjs` | Opens and verifies the dedicated browser login session |
-| `template.json` | CloudFormation template generated/used by deployment |
-| `.env.example` | Example local configuration |
+The administrative workflow includes explicit safeguards to prevent accidental publication. Review the configuration and generated content before enabling any publishing functionality.
 
 ## Testing
 
+The core application tests can be run with:
+
 ```bash
-npm test
+node --test core.test.mjs
 ```
 
-Tests cover the 90-calendar-day boundary, `Europe/Sofia` date handling,
-Builder article URL validation, and rejection of unsafe or promotional model
-output.
+## License
 
-## Security and operational notes
-
-- Never commit `.env`, `deployment.json`, `login-session.json`, credentials, or
-  browser session data.
-- Use a dedicated Builder Center sign-in; the login helper is intended to
-  navigate only to `builder.aws.com`.
-- Review the generated IAM policy and CloudFormation changes before running
-  deployment.
-- `deploy.py` intentionally refuses to overwrite an existing stack or staging
-  bucket. Inspect existing resources before retrying.
-- To remove the deployment, delete the CloudFormation stack and then remove
-  the deployment bucket after confirming its contents.
-
-No license has been specified for this repository.
+No license has been specified yet. All rights are reserved by default.
