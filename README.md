@@ -58,8 +58,6 @@ node --test core.test.mjs
 
 ## License
 
-## License
-
 This project is open source and is made available under the MIT License. You are free to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the software, provided that the original copyright and license notice are included in all copies or substantial portions of the software.
 
 The software is provided "as is", without warranty of any kind. See the [LICENSE](LICENSE) file for the full license terms.
